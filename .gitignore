@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Data and outputs (keep tracking data out of the repo)
+*.xlsx
+*.xls
+*.csv
+*.pdf
+!docs/*.png
