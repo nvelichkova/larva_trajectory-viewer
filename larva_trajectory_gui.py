@@ -29,13 +29,14 @@ import os
 import numpy as np
 import pandas as pd
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox,
     QCheckBox, QPushButton, QFileDialog, QLabel, QSpinBox, QComboBox,
     QFormLayout, QMessageBox, QLineEdit, QDoubleSpinBox, QScrollArea, QColorDialog,
+    QGridLayout, QSlider, QSplitter, QAbstractSpinBox,
 )
-from PyQt5.QtGui import QColor, QIcon, QPixmap
+from PyQt5.QtGui import QColor, QIcon, QPixmap, QImage
 from matplotlib.backends.backend_qt5agg import (
     FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT as NavToolbar,
 )
@@ -166,9 +167,17 @@ class TrajectoryViewer(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidget(panel)
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFixedWidth(300)
-        main.addWidget(scroll, 0)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setMinimumWidth(220)
+        # splitter: drag the divider to make the control panel wider/narrower
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(scroll)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(7)
+        self.splitter.setStyleSheet("QSplitter::handle { background: #d0d0d0; }"
+                                    "QSplitter::handle:hover { background: #a0a0a0; }")
+        main.addWidget(self.splitter)
+        self._panel, self._scroll = panel, scroll
 
         btn_open = QPushButton("Open Excel file…")
         btn_open.clicked.connect(self.open_file)
@@ -184,6 +193,75 @@ class TrajectoryViewer(QMainWindow):
         ctrl.addWidget(self.cmb_larva)
         self.lbl_larva.hide()
         self.cmb_larva.hide()
+
+        # ---- frame range (which part of the recording to plot) ----
+        grp_fr = QGroupBox("Frame range")
+        fgrid = QGridLayout(grp_fr)
+        self.spn_start = QSpinBox()
+        self.spn_end = QSpinBox()
+        self.sld_start = QSlider(Qt.Horizontal)
+        self.sld_end = QSlider(Qt.Horizontal)
+        self.spn_tstart = QDoubleSpinBox()
+        self.spn_tend = QDoubleSpinBox()
+        for s in (self.spn_start, self.spn_end):
+            s.setRange(0, 0)
+            s.setKeyboardTracking(False)
+        for s in (self.spn_tstart, self.spn_tend):
+            s.setRange(0, 0)
+            s.setDecimals(2)
+            s.setSuffix(" s")
+            s.setKeyboardTracking(False)
+        for s in (self.sld_start, self.sld_end):
+            s.setRange(0, 0)
+            # update numbers while dragging, redraw when released
+            s.sliderReleased.connect(self.redraw)
+        self.spn_start.valueChanged.connect(lambda v: self._set_range(start=v))
+        self.spn_end.valueChanged.connect(lambda v: self._set_range(end=v))
+        self.sld_start.valueChanged.connect(lambda v: self._set_range(start=v, slider=True))
+        self.sld_end.valueChanged.connect(lambda v: self._set_range(end=v, slider=True))
+        self.spn_tstart.valueChanged.connect(
+            lambda t: self._set_range(start=int(round(t * self.spn_fps.value()))))
+        self.spn_tend.valueChanged.connect(
+            lambda t: self._set_range(end=int(round(t * self.spn_fps.value()))))
+        fgrid.addWidget(QLabel("Start:"), 0, 0)
+        fgrid.addWidget(self.spn_start, 0, 1)
+        fgrid.addWidget(self.spn_tstart, 0, 2)
+        fgrid.addWidget(self.sld_start, 1, 0, 1, 3)
+        fgrid.addWidget(QLabel("End:"), 2, 0)
+        fgrid.addWidget(self.spn_end, 2, 1)
+        fgrid.addWidget(self.spn_tend, 2, 2)
+        fgrid.addWidget(self.sld_end, 3, 0, 1, 3)
+        btn_all = QPushButton("All frames")
+        btn_all.setToolTip("Show the whole recording (within any trim)")
+        btn_all.clicked.connect(self._range_all)
+        fgrid.addWidget(btn_all, 4, 0, 1, 3)
+        self.lbl_range = QLabel("")
+        self.lbl_range.setStyleSheet("color: #333;")
+        self.lbl_range.setWordWrap(True)
+        fgrid.addWidget(self.lbl_range, 5, 0, 1, 3)
+        # trim: redefine what counts as "the recording"
+        btn_trim = QPushButton("Set as recording")
+        btn_trim.setToolTip(
+            "Make the current Start–End the recording: frames outside it are dropped.\n"
+            "'Whole recording' colours and 'Recording start' time then refer to this,\n"
+            "and later frame selections stay inside it and keep its colours.")
+        btn_trim.clicked.connect(self._trim_to_range)
+        btn_untrim = QPushButton("Full file")
+        btn_untrim.setToolTip("Undo the trim: the recording is the whole file again")
+        btn_untrim.clicked.connect(self._untrim)
+        fgrid.addWidget(btn_trim, 6, 0, 1, 2)
+        fgrid.addWidget(btn_untrim, 6, 2)
+        self.lbl_trim = QLabel("")
+        self.lbl_trim.setStyleSheet("color: #8a4b00;")
+        self.lbl_trim.setWordWrap(True)
+        fgrid.addWidget(self.lbl_trim, 7, 0, 1, 3)
+        fgrid.setColumnStretch(1, 1)
+        fgrid.setColumnStretch(2, 1)
+        self.spn_start.setToolTip("First frame to plot")
+        self.spn_end.setToolTip("Last frame to plot")
+        self.spn_tstart.setToolTip("Start as time (uses Frames per second in the Time box)")
+        self.spn_tend.setToolTip("End as time (uses Frames per second in the Time box)")
+        ctrl.addWidget(grp_fr)
 
         # points
         self.grp_points = QGroupBox("Body points")
@@ -302,13 +380,30 @@ class TrajectoryViewer(QMainWindow):
         self.spn_fps.setDecimals(3)
         self.spn_fps.setValue(10)
         self.spn_fps.setKeyboardTracking(False)
-        self.spn_fps.valueChanged.connect(self.redraw)
+        # re-sync the time boxes of the frame range, then redraw
+        self.spn_fps.valueChanged.connect(lambda *_: self._set_range())
         tform.addRow("Frames per second:", self.spn_fps)
         self.cmb_tunit = QComboBox()
         self.cmb_tunit.addItems(["Frames", "Seconds (s)", "Minutes (min)"])
         self.cmb_tunit.setToolTip("Units used for the colour bar, title and first/last labels")
         self.cmb_tunit.currentIndexChanged.connect(self.redraw)
         tform.addRow("Show time as:", self.cmb_tunit)
+        self.cmb_tzero = QComboBox()
+        self.cmb_tzero.addItems(["Start frame (count up from 0)",
+                                 "End frame (count down to 0)",
+                                 "Recording start (frame 0, or trim start)",
+                                 "Recording end (count down to 0)"])
+        self.cmb_tzero.setToolTip(
+            "Start frame: the current Start frame is time 0 — after cutting frames, the\n"
+            "new first frame is 0.\n"
+            "End frame: the end of the plotted range is 0 and earlier frames are negative\n"
+            "(e.g. −120 s … 0), so everything leads up to the last frame.\n"
+            "Recording start: the first frame of the recording is 0 — frame 0 of the file,\n"
+            "or the trim start after 'Set as recording'.\n"
+            "Recording end: the last frame of the recording (or trim end) is 0; a section\n"
+            "keeps its place on that countdown, e.g. −11311 … −5311 s.")
+        self.cmb_tzero.currentIndexChanged.connect(self.redraw)
+        tform.addRow("Time zero at:", self.cmb_tzero)
         self.lbl_time = QLabel("")
         self.lbl_time.setWordWrap(True)
         self.lbl_time.setStyleSheet("color: #333;")
@@ -349,6 +444,66 @@ class TrajectoryViewer(QMainWindow):
         self.cmb_colour.currentIndexChanged.connect(self.redraw)
         form.addRow("Colour:", self.cmb_colour)
 
+        # colour map used when Colour = By time (light -> dark options first)
+        self.CMAPS = [
+            ("Light→dark: Yellow-Green-Blue", "YlGnBu"),
+            ("Light→dark: Yellow-Orange-Red", "YlOrRd"),
+            ("Light→dark: Magma", "magma_r"),
+            ("Light→dark: Inferno", "inferno_r"),
+            ("Light→dark: Plasma", "plasma_r"),
+            ("Light→dark: Viridis", "viridis_r"),
+            ("Light→dark: Cividis", "cividis_r"),
+            ("Light→dark: Blues", "Blues"),
+            ("Light→dark: Purples", "Purples"),
+            ("Light→dark: Greens", "Greens"),
+            ("Light→dark: Greys", "Greys"),
+            ("Light→dark: Pink-Purple", "RdPu"),
+            ("Light→dark: Blue-Purple", "BuPu"),
+            ("Dark→light: Viridis (original)", "viridis"),
+            ("Dark→light: Magma", "magma"),
+            ("Rainbow: Turbo", "turbo"),
+        ]
+        self.cmb_cmap = QComboBox()
+        for label, name in self.CMAPS:
+            self.cmb_cmap.addItem(self._cmap_icon(name), label)
+        self.cmb_cmap.setIconSize(QSize(60, 12))
+        self.cmb_cmap.setCurrentIndex(0)
+        self.cmb_cmap.setToolTip("Colour map for Colour = By time (first frame → last frame)")
+        self.cmb_cmap.currentIndexChanged.connect(self._cmap_changed)
+        form.addRow("Time colour map:", self.cmb_cmap)
+        self.chk_cmap_rev = QCheckBox("Reverse colour map")
+        self.chk_cmap_rev.toggled.connect(self._cmap_changed)
+        form.addRow(self.chk_cmap_rev)
+        self.spn_cmap_skip = QSpinBox()
+        self.spn_cmap_skip.setRange(0, 60)
+        self.spn_cmap_skip.setSuffix(" %")
+        self.spn_cmap_skip.setValue(15)
+        self.spn_cmap_skip.setKeyboardTracking(False)
+        self.spn_cmap_skip.setToolTip("Cut off the palest end of the map so early frames "
+                                      "stay visible on a white background")
+        self.spn_cmap_skip.valueChanged.connect(self._cmap_changed)
+        form.addRow("Skip palest:", self.spn_cmap_skip)
+        self.cmb_cscale = QComboBox()
+        self.cmb_cscale.addItems(["Start frame → end frame (restarts when cropped)",
+                                  "Whole recording (fixed colours)"])
+        self.cmb_cscale.setToolTip(
+            "Start frame → end frame: the palette (and colour bar) begins at the current\n"
+            "Start frame, so after cutting frames the new first frame gets the first colour.\n"
+            "Whole recording: every frame keeps the colour it has in the full plot of the\n"
+            "recording (the whole file, or the trimmed part after 'Set as recording');\n"
+            "the colour bar shows the recording with lines marking the plotted part.")
+        self.cmb_cscale.currentIndexChanged.connect(self.redraw)
+        form.addRow("Colour scale:", self.cmb_cscale)
+        self.chk_cbar_full = QCheckBox("Colour bar shows whole recording")
+        self.chk_cbar_full.setToolTip(
+            "Only used with Colour scale = Whole recording.\n"
+            "Off (default): the colour bar covers just the plotted frames, keeping their\n"
+            "whole-recording colours, with ticks relative to Time zero.\n"
+            "On: the colour bar covers the whole recording, with lines marking the\n"
+            "plotted part.")
+        self.chk_cbar_full.toggled.connect(self.redraw)
+        form.addRow(self.chk_cbar_full)
+
         # single colour for body lines when Colour = By body point
         self.BODY_COLOURS = {"Grey (default)": "#999999", **self.MOM_COLOURS}
         self.body_custom = None
@@ -379,13 +534,6 @@ class TrajectoryViewer(QMainWindow):
         self.spn_body_lw.valueChanged.connect(self.redraw)
         form.addRow("Body line width:", self.spn_body_lw)
 
-        self.spn_start = QSpinBox()
-        self.spn_end = QSpinBox()
-        for s in (self.spn_start, self.spn_end):
-            s.setRange(0, 0)
-            s.valueChanged.connect(self.redraw)
-        form.addRow("Start frame:", self.spn_start)
-        form.addRow("End frame:", self.spn_end)
 
         self.chk_skel = QCheckBox("Draw body skeleton")
         self.chk_skel.toggled.connect(self.redraw)
@@ -493,14 +641,19 @@ class TrajectoryViewer(QMainWindow):
         ctrl.addStretch(1)
 
         # ---------------- plot ----------------
-        right = QVBoxLayout()
-        main.addLayout(right, 1)
+        right_w = QWidget()
+        right = QVBoxLayout(right_w)
+        right.setContentsMargins(0, 0, 0, 0)
+        self.splitter.addWidget(right_w)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
         self.fig = Figure(figsize=(7, 7), layout="tight")  # re-fits on every resize
         self.canvas = FigureCanvas(self.fig)
         right.addWidget(NavToolbar(self.canvas, self))
         right.addWidget(self.canvas, 1)
 
         self.lbl_cal.setText("1 px = 10 mm in x and y (set your factors above)")
+        self._compact_panel()
         if path:
             self.load(path)
 
@@ -552,14 +705,131 @@ class TrajectoryViewer(QMainWindow):
         self.mode_sel = {0: {"head", "tail"} & set(pts), 1: {"mom"} & set(pts)}
         self._set_ticks(self.mode_sel[self.cmb_mode.currentIndex()])
 
-        for s in (self.spn_start, self.spn_end):
+        self.n_frames = n
+        self.trim = (0, n - 1)          # the 'recording' (can be trimmed)
+        self._update_trim_label()
+        for s in (self.spn_start, self.spn_end, self.sld_start, self.sld_end):
             s.blockSignals(True)
             s.setRange(0, n - 1)
-        self.spn_start.setValue(0)
-        self.spn_end.setValue(n - 1)
-        for s in (self.spn_start, self.spn_end):
             s.blockSignals(False)
-        self.redraw()
+        self._set_range(start=0, end=n - 1)
+
+    # ---------------- panel layout ----------------
+    def _compact_panel(self):
+        """Let the control panel work at narrow widths / high DPI scaling."""
+        panel = self._panel
+        for form in panel.findChildren(QFormLayout):
+            # long label + field: put the field on the next line when narrow
+            form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+            form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        for cmb in panel.findChildren(QComboBox):
+            # don't force the panel as wide as the longest menu entry
+            cmb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            cmb.setMinimumContentsLength(8)
+            cmb.view().setMinimumWidth(cmb.view().sizeHintForColumn(0) + 30)
+        for w in panel.findChildren(QAbstractSpinBox):
+            w.setMinimumWidth(70)
+        for lbl in panel.findChildren(QLabel):
+            lbl.setWordWrap(True)
+        # starting width: what the panel wants, within sensible limits
+        want = min(max(panel.sizeHint().width() + 25, 320), 460)
+        self.splitter.setSizes([want, max(self.width() - want, 400)])
+
+    # ---------------- time colour map ----------------
+    @staticmethod
+    def _cmap_icon(name, w=60, h=12):
+        from PyQt5.QtGui import QImage, QColor, QIcon, QPixmap  # local: always available
+        cm = mpl.colormaps[name]
+        img = QImage(w, h, QImage.Format_RGB32)
+        for x in range(w):
+            r, g, b, _ = cm(x / (w - 1))
+            c = QColor(int(r * 255), int(g * 255), int(b * 255))
+            for y in range(h):
+                img.setPixelColor(x, y, c)
+        return QIcon(QPixmap.fromImage(img))
+
+    def _time_cmap(self):
+        """Selected map, optionally reversed, with the palest end trimmed."""
+        name = self.CMAPS[self.cmb_cmap.currentIndex()][1]
+        cm = mpl.colormaps[name]
+        if self.chk_cmap_rev.isChecked():
+            cm = cm.reversed()
+        skip = self.spn_cmap_skip.value() / 100
+        if skip <= 0:
+            return cm
+        # find which end is lighter and trim that end
+        lum = lambda c: 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+        if lum(cm(0.0)) >= lum(cm(1.0)):
+            vals = np.linspace(skip, 1, 256)
+        else:
+            vals = np.linspace(0, 1 - skip, 256)
+        return mpl.colors.ListedColormap(cm(vals), name=f"{cm.name}_trim")
+
+    def _cmap_changed(self, *_):
+        # switching to a colour map implies time colouring
+        if self.cmb_colour.currentIndex() != 1 and self.sender() is self.cmb_cmap:
+            self.cmb_colour.setCurrentIndex(1)   # triggers redraw
+        else:
+            self.redraw()
+
+    # ---------------- frame range ----------------
+    def _set_range(self, start=None, end=None, slider=False):
+        """Keep frame boxes, time boxes and sliders in sync; start <= end."""
+        a = self.spn_start.value() if start is None else start
+        b = self.spn_end.value() if end is None else end
+        n = getattr(self, "n_frames", 1)
+        t0, t1 = getattr(self, "trim", (0, n - 1))
+        a = max(t0, min(a, t1))
+        b = max(t0, min(b, t1))
+        if a > b:                       # push the other end along
+            if start is not None:
+                b = a
+            else:
+                a = b
+        fps = self.spn_fps.value()
+        widgets = (self.spn_start, self.spn_end, self.sld_start, self.sld_end,
+                   self.spn_tstart, self.spn_tend)
+        for w in widgets:
+            w.blockSignals(True)
+        self.spn_start.setValue(a)
+        self.spn_end.setValue(b)
+        self.sld_start.setValue(a)
+        self.sld_end.setValue(b)
+        for s in (self.spn_start, self.spn_end, self.sld_start, self.sld_end):
+            s.setRange(t0, t1)
+        for s in (self.spn_tstart, self.spn_tend):
+            s.setRange(t0 / fps, t1 / fps)
+        self.spn_tstart.setValue(a / fps)
+        self.spn_tend.setValue(b / fps)
+        for w in widgets:
+            w.blockSignals(False)
+        self.lbl_range.setText(f"{b - a + 1} of {t1 - t0 + 1} frames\n"
+                               f"{(b - a) / fps:.2f} s ({(b - a) / fps / 60:.2f} min)")
+        dragging = slider and (self.sld_start.isSliderDown() or self.sld_end.isSliderDown())
+        if not dragging:
+            self.redraw()
+
+    def _range_all(self):
+        t0, t1 = getattr(self, "trim", (0, getattr(self, "n_frames", 1) - 1))
+        self._set_range(start=t0, end=t1)
+
+    def _trim_to_range(self):
+        self.trim = (self.spn_start.value(), self.spn_end.value())
+        self._update_trim_label()
+        self._set_range()
+
+    def _untrim(self):
+        self.trim = (0, self.n_frames - 1)
+        self._update_trim_label()
+        self._set_range()
+
+    def _update_trim_label(self):
+        t0, t1 = self.trim
+        if (t0, t1) == (0, self.n_frames - 1):
+            self.lbl_trim.setText("Recording = full file")
+        else:
+            self.lbl_trim.setText(f"Recording trimmed to frames {t0}–{t1} "
+                                  f"(of 0–{self.n_frames - 1})")
 
     def _set_range_boxes(self, xlim, ylim):
         lo_hi = {"x min": min(xlim), "x max": max(xlim),
@@ -722,12 +992,21 @@ class TrajectoryViewer(QMainWindow):
         a, b = self.spn_start.value(), self.spn_end.value()
         if b < a:
             a, b = b, a
+        # frame that counts as time 0 (first frame of file, or end of plotted range)
+        # 0 start frame, 1 end frame, 2 recording start, 3 recording end
+        self._t_mode = self.cmb_tzero.currentIndex()
+        self._t_ref = {0: a, 1: b, 2: self.trim[0], 3: self.trim[1]}[self._t_mode]
         sl = slice(a, b + 1)
         frames = np.arange(a, b + 1)
         lw = self.spn_lw.value()
         by_time = self.cmb_colour.currentIndex() == 1
-        norm = mpl.colors.Normalize(vmin=a, vmax=b)
-        cmap = mpl.cm.viridis
+        if self.cmb_cscale.currentIndex() == 1:
+            # fixed to the whole file, so cropped plots share the same colours
+            t0, t1 = self.trim
+            norm = mpl.colors.Normalize(vmin=t0, vmax=max(t1, t0 + 1))
+        else:
+            norm = mpl.colors.Normalize(vmin=a, vmax=b)
+        cmap = self._time_cmap()
         lc_last = None
         body_mode = self.cmb_mode.currentIndex() == 1
         for w in (self.spn_body_step, self.chk_body_spine, self.chk_body_head,
@@ -883,21 +1162,49 @@ class TrajectoryViewer(QMainWindow):
     def _tstr(self, frame, unit=True):
         """Frame number formatted in the chosen time unit."""
         k = self.cmb_tunit.currentIndex()
+        rel = frame - getattr(self, "_t_ref", 0)
         if k == 0:
-            return f"{int(frame)}"
-        t = frame / self.spn_fps.value()
+            return f"{int(rel)}".replace("-", "−")
+        t = rel / self.spn_fps.value()
         if k == 2:
             t /= 60
         u = " s" if k == 1 else " min"
-        return f"{t:.4g}{u if unit else ''}"
+        return f"{self._num(t)}{u if unit else ''}"
+
+    @staticmethod
+    def _num(t):
+        """Readable number without scientific notation (−17310, −12.5, −0.333)."""
+        a = abs(t)
+        if a >= 100:
+            txt = f"{t:.0f}"
+        elif a >= 10:
+            txt = f"{t:.1f}"
+        else:
+            txt = f"{t:.3g}"
+        if "." in txt:
+            txt = txt.rstrip("0").rstrip(".")
+        if txt in ("-0", ""):
+            txt = "0"
+        return txt.replace("-", "−")
 
     def _update_time_label(self, a, b):
         fps = self.spn_fps.value()
         t0, t1 = a / fps, b / fps
         dur = (b - a) / fps
-        self.lbl_time.setText(
-            f"Frames {a}–{b} = {t0:.2f}–{t1:.2f} s\n"
-            f"Duration: {dur:.2f} s ({dur / 60:.2f} min)")
+        txt = (f"Frames {a}–{b} = {t0:.2f}–{t1:.2f} s\n"
+               f"Duration: {dur:.2f} s ({dur / 60:.2f} min)")
+        mode = getattr(self, "_t_mode", 0)
+        if mode == 0 and a > 0:
+            txt += f"\nTime 0 = start frame {a}"
+        elif mode == 1:
+            txt += f"\nTime 0 = end frame {b}; first plotted frame = −{dur:.2f} s"
+        elif mode == 2 and self.trim[0] > 0:
+            txt += f"\nTime 0 = recording start, frame {self.trim[0]}"
+        elif mode == 3:
+            r = self.trim[1]
+            txt += (f"\nTime 0 = recording end, frame {r}; plotted "
+                    f"{self._num((a - r) / fps)} to {self._num((b - r) / fps)} s")
+        self.lbl_time.setText(txt)
 
     def _finish_axes(self, ax, a, b, by_time, lc_last, legend_handles):
         manual = not self.chk_auto.isChecked()
@@ -930,25 +1237,51 @@ class TrajectoryViewer(QMainWindow):
             ax.set_axis_off()
 
         title = self.txt_title.text().strip() or os.path.splitext(os.path.basename(self.path))[0]
+        sep = " to " if self._t_mode in (1, 3) else "–"
         if self.cmb_tunit.currentIndex() == 0:
-            ax.set_title(f"{title}  (frames {a}–{b})", fontsize=11)
+            rng = f"frames {self._tstr(a)}{sep}{self._tstr(b)}"
+            if self._t_ref:     # relative numbering: also give the real frame
+                rng += f"; 0 = frame {self._t_ref}"
         else:
-            ax.set_title(f"{title}  ({self._tstr(a, unit=False)}–{self._tstr(b)})", fontsize=11)
+            rng = f"{self._tstr(a, unit=False)}{sep}{self._tstr(b)}"
+        ax.set_title(f"{title}  ({rng})", fontsize=11)
         self._update_time_label(a, b)
 
         if by_time and lc_last is not None:
-            cb = self.fig.colorbar(lc_last, ax=ax, fraction=0.04, pad=0.02)
-            k = self.cmb_tunit.currentIndex()
-            if k == 0:
-                cb.set_label("frame")
+            whole = self.cmb_cscale.currentIndex() == 1
+            cropped = a > self.trim[0] or b < self.trim[1]
+            if whole and cropped and not self.chk_cbar_full.isChecked() and b > a:
+                # colour bar for the plotted frames only, but with the colours those
+                # frames have on the whole-recording scale
+                fr_ = np.linspace(a, b, 256)
+                sub = mpl.colors.ListedColormap(lc_last.cmap(lc_last.norm(fr_)))
+                sm = mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(a, b), cmap=sub)
+                sm.set_array([])
+                cb = self.fig.colorbar(sm, ax=ax, fraction=0.04, pad=0.02)
+                cb_lo, cb_hi = a, b
             else:
-                div = self.spn_fps.value() * (60 if k == 2 else 1)
-                # choose round tick values in time units, then place them in frames
-                tt = mpl.ticker.MaxNLocator(nbins=7).tick_values(a / div, b / div)
-                tt = tt[(tt >= a / div - 1e-9) & (tt <= b / div + 1e-9)]
-                cb.set_ticks(tt * div)
-                cb.set_ticklabels([f"{t:g}" for t in tt])
-                cb.set_label("time (s)" if k == 1 else "time (min)")
+                cb = self.fig.colorbar(lc_last, ax=ax, fraction=0.04, pad=0.02)
+                cb_lo, cb_hi = lc_last.norm.vmin, lc_last.norm.vmax
+                if whole and cropped:
+                    # show which part of the recording is plotted
+                    for f in (a, b):
+                        cb.ax.axhline(f, color="k", lw=1.2)
+            k = self.cmb_tunit.currentIndex()
+            ref = self._t_ref
+            div = 1.0 if k == 0 else self.spn_fps.value() * (60 if k == 2 else 1)
+            # choose round tick values in the shown unit (relative to time 0),
+            # then place them at the matching frames
+            lo, hi = cb_lo, cb_hi   # range of the colour bar
+            rlo, rhi = (lo - ref) / div, (hi - ref) / div
+            loc = mpl.ticker.MaxNLocator(nbins=7, integer=(k == 0))
+            tt = loc.tick_values(rlo, rhi)
+            tt = tt[(tt >= rlo - 1e-9) & (tt <= rhi + 1e-9)]
+            cb.set_ticks(tt * div + ref)
+            cb.set_ticklabels([self._num(t) for t in tt])
+            unit = {0: "frame", 1: "time (s)", 2: "time (min)"}[k]
+            note = {0: ", 0 = start frame", 1: ", 0 = last frame",
+                    2: ", 0 = recording start", 3: ", 0 = recording end"}.get(self._t_mode, "")
+            cb.set_label(unit + (note if ref or self._t_mode in (1, 3) else ""))
 
         if self.chk_legend.isChecked() and legend_handles is None:
             h, l = ax.get_legend_handles_labels()
